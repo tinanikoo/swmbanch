@@ -1,0 +1,25 @@
+global:
+  gc: false
+  measurements:
+    - name: podLatency
+    - name: serviceLatency
+      svcTimeout: 30s
+
+jobs:
+  - name: perfapp-postgres-codecoapp-cam-only
+    jobIterations: ${JOB_ITERATIONS}
+    qps: ${QPS}
+    burst: ${BURST}
+    namespacedIterations: false
+    namespace: ${NAMESPACE}
+    waitWhenFinished: true
+    maxWaitTimeout: 20m
+    preLoadImages: false
+    podWait: false
+    objects:
+      - objectTemplate: templates/perfapp-postgres-cam.yml
+        replicas: ${CODECOAPP_REPLICAS}
+        inputVars:
+          readinessPeriod: 10
+          namespace: ${NAMESPACE}
+          schedulerName: ${SCHEDULER_NAME}
