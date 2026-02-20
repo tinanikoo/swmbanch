@@ -2,13 +2,15 @@ apiVersion: codeco.he-codeco.eu/v1alpha1
 kind: CodecoApp
 metadata:
   generation: 1
-  name: perfapp-pg-test-{{.Replica}}-{{.Iteration}}
+  name: perfapp-pg-{{.Replica}}-{{.Iteration}}
   namespace:  {{ .namespace }}
+  resourceVersion: "1456"
+  uid: 5c948d7e-43d6-425b-b0b2-76402b606e07
 spec:
   appEnergyLimit: "20"
   appFailureTolerance: ""
   performanceProfile: Greenness
-  #appName: codecoappinstance3-swmapp
+  appName: perfapp-pg-swmapp-{{.Replica}}-{{.Iteration}}
   codecoapp-msspec:
   - podspec:
       schedulerName:  {{ .schedulerName }}
@@ -34,7 +36,7 @@ spec:
         maxDelay: "10s"
         sendInterval: "10"
       otherService:
-        appName: perfapp-pg-test-{{.Replica}}-{{.Iteration}}
+        appName: perfapp-pg-swmapp-{{.Replica}}-{{.Iteration}}
         serviceName: perfapp-test-{{.Replica}}-{{.Iteration}}
         port: 8080
   - podspec:
@@ -74,7 +76,7 @@ spec:
         maxDelay: "10s"
         sendInterval: "10"
       otherService:
-        appName: perfapp-pg-test-{{.Replica}}-{{.Iteration}}
+        appName: perfapp-pg-swmapp-{{.Replica}}-{{.Iteration}}
         serviceName: postgres-test-{{.Replica}}-{{.Iteration}}
         port: 5432
   complianceClass: High
