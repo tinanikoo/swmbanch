@@ -4,8 +4,6 @@ metadata:
   generation: 1
   name: perfapp-pg-{{.Replica}}-{{.Iteration}}
   namespace:  {{ .namespace }}
-  resourceVersion: "1456"
-  uid: 5c948d7e-43d6-425b-b0b2-76402b606e07
 spec:
   appEnergyLimit: "20"
   appFailureTolerance: ""
