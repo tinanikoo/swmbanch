@@ -12,11 +12,11 @@ KUBEBURNER_TIMEOUT="${KUBEBURNER_TIMEOUT:-6m}"
 INTER_EXPERIMENT_SLEEP="${INTER_EXPERIMENT_SLEEP:-10}"
 WAIT_CREATE_TIMEOUT="${WAIT_CREATE_TIMEOUT:-300}"
 WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-2}"
-WAIT_COUNTER_MODE="${WAIT_COUNTER_MODE:-observed}" # observed | ready
+WAIT_COUNTER_MODE="${WAIT_COUNTER_MODE:-ready}" # observed | ready
 POST_CREATION_DELAY_SECONDS="${POST_CREATION_DELAY_SECONDS:-90}"
 DELETE_WAIT_TIMEOUT="${DELETE_WAIT_TIMEOUT:-180}"
 DELETE_POLL_SECONDS="${DELETE_POLL_SECONDS:-1}"
-DELETE_WAIT_INCLUDE_SERVICES="${DELETE_WAIT_INCLUDE_SERVICES:-false}" # true | false
+DELETE_WAIT_INCLUDE_SERVICES="${DELETE_WAIT_INCLUDE_SERVICES:-true}" # true | false
 iterations="${iterations:-1}"
 SCHEDULER_MODE="${1:-qos}" # qos | def
 
@@ -334,6 +334,8 @@ for (( run=1; run<=iterations; run++ )); do
   echo "Template: ${TEMPLATE_FILE}"
   echo "Scheduler mode: ${SCHEDULER_MODE}"
   echo "Scheduler name: ${SCHEDULER_NAME}"
+  echo "Create wait criterion: ${WAIT_COUNTER_MODE}"
+  echo "Delete waits services: ${DELETE_WAIT_INCLUDE_SERVICES}"
   echo "Summary log: ${SUMMARY_FILE}"
   echo "Delete log: ${DELETE_LOG}"
   echo "============================================================"
