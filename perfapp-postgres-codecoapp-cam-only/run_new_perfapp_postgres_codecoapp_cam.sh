@@ -17,6 +17,8 @@ POST_CREATION_DELAY_SECONDS="${POST_CREATION_DELAY_SECONDS:-90}"
 DELETE_WAIT_TIMEOUT="${DELETE_WAIT_TIMEOUT:-180}"
 DELETE_POLL_SECONDS="${DELETE_POLL_SECONDS:-1}"
 DELETE_WAIT_INCLUDE_SERVICES="${DELETE_WAIT_INCLUDE_SERVICES:-true}" # true | false
+WAIT_SERVICE_TIMEOUT="${WAIT_SERVICE_TIMEOUT:-300}"
+SERVICE_POLL_SECONDS="${SERVICE_POLL_SECONDS:-1}"
 iterations="${iterations:-1}"
 SCHEDULER_MODE="${1:-qos}" # qos | def
 
@@ -205,6 +207,62 @@ wait_for_creation_readiness() {
   done
 }
 
+measure_service_observed_time() {
+  local experiment_desc="$1"
+  local run_id="$2"
+  local run_log_file="$3"
+  local replicas="$4"
+  local job_iters="$5"
+  local creation_anchor_ts="${6:-}"
+  local ns="${BASE_NS}"
+  local services_per_instance=2
+  local expected_services observed_services now elapsed since_anchor
+  local status="ok"
+  local service_seconds="na"
+  local timing_line timing_msg ts metric_line
+
+  expected_services=$((replicas * services_per_instance * job_iters))
+  if [[ -z "${creation_anchor_ts}" ]]; then
+    creation_anchor_ts=$(date +%s)
+  fi
+
+  local started_at
+  started_at=$(date +%s)
+  while true; do
+    observed_services=$(kubectl get svc -n "${ns}" --no-headers 2>/dev/null | wc -l || echo 0)
+    now=$(date +%s)
+    since_anchor=$((now - creation_anchor_ts))
+    elapsed=$((now - started_at))
+
+    if [[ "${observed_services}" -ge "${expected_services}" ]]; then
+      service_seconds="${since_anchor}"
+      break
+    fi
+    if [[ "${elapsed}" -ge "${WAIT_SERVICE_TIMEOUT}" ]]; then
+      status="timeout"
+      break
+    fi
+    sleep "${SERVICE_POLL_SECONDS}"
+  done
+
+  timing_line="ServiceObservedSeconds run=${run_id} ${experiment_desc} serviceObserved=${service_seconds}s expectedServices=${expected_services} observedServices=${observed_services} status=${status}"
+  echo "${timing_line}" | tee -a "${SUMMARY_FILE}"
+
+  if [[ -n "${run_log_file}" && -f "${run_log_file}" ]]; then
+    timing_msg="${BASE_NS}: ServiceObserved serviceReady: ${service_seconds}s expectedServices: ${expected_services} observedServices: ${observed_services} status: ${status}"
+    ts=$(date +"%Y-%m-%d %H:%M:%S")
+    metric_line="time=\"${ts}\" level=info msg=\"${timing_msg}\" file=\"run_new_perfapp_postgres_codecoapp_cam.sh:measure_service_observed_time\""
+    if grep -q 'Finished execution with UUID:' "${run_log_file}"; then
+      awk -v ins="${metric_line}" '
+        /Finished execution with UUID:/ && !done { print ins; done=1 }
+        { print }
+      ' "${run_log_file}" > "${run_log_file}.tmp" && mv "${run_log_file}.tmp" "${run_log_file}"
+    else
+      echo "${metric_line}" >> "${run_log_file}"
+    fi
+  fi
+}
+
 extract_podlatency_block() {
   local src_log="$1"
   local experiment_desc="$2"
@@ -225,7 +283,7 @@ extract_podlatency_block() {
         if (line ~ /Deleting [0-9]+ namespaces with label: kubernetes.io\/metadata.name=kube-burner-service-latency/) { print; next }
         if (line ~ /Finished execution with UUID:/) { print; next }
         if (line ~ /👋 Exiting kube-burner/) { print; next }
-        if (line ~ /file="run_new_perfapp_postgres_codecoapp_cam.sh:(capture_creation_status|measure_delete_time|wait_for_creation_readiness)"/) { print; next }
+        if (line ~ /file="run_new_perfapp_postgres_codecoapp_cam.sh:(capture_creation_status|measure_delete_time|wait_for_creation_readiness|measure_service_observed_time)"/) { print; next }
 
         # Keep latency quantiles from the full log; these can appear before "Stopping measurement"
         if (line ~ /level=info/ && (line ~ /(50th:|99th:|max:|avg:)/ || low ~ /containerready/)) { print; next }
@@ -335,6 +393,7 @@ for (( run=1; run<=iterations; run++ )); do
   echo "Scheduler mode: ${SCHEDULER_MODE}"
   echo "Scheduler name: ${SCHEDULER_NAME}"
   echo "Create wait criterion: ${WAIT_COUNTER_MODE}"
+  echo "Service wait timeout: ${WAIT_SERVICE_TIMEOUT}s"
   echo "Delete waits services: ${DELETE_WAIT_INCLUDE_SERVICES}"
   echo "Summary log: ${SUMMARY_FILE}"
   echo "Delete log: ${DELETE_LOG}"
@@ -381,6 +440,7 @@ for (( run=1; run<=iterations; run++ )); do
     fi
 
     wait_for_creation_readiness "${experiment}" "${run}" "${new_log_file}" "${codecoapp_replicas}" "${jobIterations}" "${creation_started_at}" || true
+    measure_service_observed_time "${experiment}" "${run}" "${new_log_file}" "${codecoapp_replicas}" "${jobIterations}" "${creation_started_at}"
     echo "post-creation-delay sleeping ${POST_CREATION_DELAY_SECONDS}s before capture/deletion..."
     sleep "${POST_CREATION_DELAY_SECONDS}"
     capture_creation_status "${experiment}" "${run}" "${new_log_file}" "${codecoapp_replicas}" "${jobIterations}"
