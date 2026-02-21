@@ -35,7 +35,7 @@ DELETE_LOG="${SCRIPT_DIR}/deletion_times-perfapp-postgres-codecoapp-cam-only.log
 SUMMARY_FILE="${SCRIPT_DIR}/kube-burner-perfapp-postgres-codecoapp-cam-only-podlatency-summary.log"
 : > "${SUMMARY_FILE}"
 echo "# podLatency summary (selected kube-burner output)" >> "${SUMMARY_FILE}"
-
+#tina
 experiments=(
   "jobIterations=1 qps=1 burst=1 codecoapp_replicas=1"
   "jobIterations=1 qps=1 burst=1 codecoapp_replicas=5"
