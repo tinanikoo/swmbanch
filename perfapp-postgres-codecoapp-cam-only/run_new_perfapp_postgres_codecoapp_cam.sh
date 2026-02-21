@@ -57,6 +57,31 @@ experiments=(
   "jobIterations=1 qps=1000 burst=1000 codecoapp_replicas=20"
 )
 
+calc_stats_from_file_ms() {
+  local values_file="$1"
+  if [[ ! -s "${values_file}" ]]; then
+    echo "na na na 0"
+    return 0
+  fi
+
+  local count p99_index p99 max avg
+  count=$(wc -l < "${values_file}")
+  p99_index=$(( (99 * count + 99) / 100 ))
+  p99=$(sort -n "${values_file}" | sed -n "${p99_index}p")
+  max=$(sort -n "${values_file}" | tail -n 1)
+  avg=$(awk '{s+=$1} END {if (NR>0) printf "%.0f", s/NR; else print "na"}' "${values_file}")
+  echo "${p99} ${max} ${avg} ${count}"
+}
+
+to_epoch_ms() {
+  local ts="$1"
+  if [[ -z "${ts}" || "${ts}" == "null" ]]; then
+    echo ""
+    return 0
+  fi
+  date -d "${ts}" +%s%3N 2>/dev/null || echo ""
+}
+
 capture_creation_status() {
   local experiment_desc="$1"
   local run_id="$2"
@@ -106,6 +131,8 @@ wait_for_creation_readiness() {
   local now elapsed started_at codecoapps plans since_anchor
   local observed_ready_seconds="" pod_ready_seconds="" container_ready_seconds=""
   local timing_line timing_msg ts metric_line
+  local pod_ready_values_file pod_ready_stats p99_ms max_ms avg_ms sample_count
+  pod_ready_values_file=$(mktemp)
 
   expected_pods=$((replicas * components_per_instance * job_iters))
   expected_containers="${expected_pods}"
@@ -155,6 +182,20 @@ wait_for_creation_readiness() {
     fi
 
     if [[ "${current_count}" -ge "${expected_pods}" ]]; then
+      while IFS='|' read -r pod_name ready_ts; do
+        [[ -z "${pod_name}" || -z "${ready_ts}" ]] && continue
+        ready_epoch_ms=$(to_epoch_ms "${ready_ts}")
+        [[ -z "${ready_epoch_ms}" ]] && continue
+        delta_ms=$((ready_epoch_ms - creation_anchor_ts * 1000))
+        if [[ "${delta_ms}" -ge 0 ]]; then
+          echo "${delta_ms}" >> "${pod_ready_values_file}"
+        fi
+      done < <(kubectl get pods -n "${ns}" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.conditions[?(@.type=="Ready")].lastTransitionTime}{"\n"}{end}' 2>/dev/null || true)
+
+      pod_ready_stats=$(calc_stats_from_file_ms "${pod_ready_values_file}")
+      read -r p99_ms max_ms avg_ms sample_count <<< "${pod_ready_stats}"
+      echo "ContainerReadyLatency run=${run_id} ${experiment_desc} 99th=${p99_ms}ms max=${max_ms}ms avg=${avg_ms}ms samples=${sample_count}" | tee -a "${SUMMARY_FILE}"
+
       timing_line="CreateReadinessSeconds run=${run_id} ${experiment_desc} observedReady=${observed_ready_seconds:-na}s podReady=${pod_ready_seconds:-na}s containerReady=${container_ready_seconds:-na}s expectedPods=${expected_pods} observedPods=${observed_pods} readyPods=${ready_pods} expectedContainers=${expected_containers} readyContainers=${ready_containers} status=ok"
       echo "${timing_line}" | tee -a "${SUMMARY_FILE}"
       timing_msg="${BASE_NS}: CreateReadiness observedReady: ${observed_ready_seconds:-na}s podReady: ${pod_ready_seconds:-na}s containerReady: ${container_ready_seconds:-na}s expectedPods: ${expected_pods} observedPods: ${observed_pods} readyPods: ${ready_pods} expectedContainers: ${expected_containers} readyContainers: ${ready_containers} status: ok"
@@ -169,8 +210,19 @@ wait_for_creation_readiness() {
         else
           echo "${metric_line}" >> "${run_log_file}"
         fi
+
+        metric_line="time=\"${ts}\" level=info msg=\"${BASE_NS}: ContainerReadyLatency 99th: ${p99_ms}ms max: ${max_ms}ms avg: ${avg_ms}ms samples: ${sample_count}\" file=\"run_new_perfapp_postgres_codecoapp_cam.sh:wait_for_creation_readiness\""
+        if grep -q 'Finished execution with UUID:' "${run_log_file}"; then
+          awk -v ins="${metric_line}" '
+            /Finished execution with UUID:/ && !done { print ins; done=1 }
+            { print }
+          ' "${run_log_file}" > "${run_log_file}.tmp" && mv "${run_log_file}.tmp" "${run_log_file}"
+        else
+          echo "${metric_line}" >> "${run_log_file}"
+        fi
       fi
       echo "create-progress criterion=${criterion} value=${current_count}/${expected_pods} readyPods=${ready_pods}/${expected_pods} observedPods=${observed_pods}/${expected_pods} codecoapps=${codecoapps} assignmentplan='${plans}'"
+      rm -f "${pod_ready_values_file}"
       return 0
     fi
 
@@ -200,6 +252,7 @@ wait_for_creation_readiness() {
         kubectl get events -n "${ns}" --sort-by=.lastTimestamp 2>/dev/null | tail -n 30 || true
         echo "--------------------------------"
       } >> "${SUMMARY_FILE}"
+      rm -f "${pod_ready_values_file}"
       return 1
     fi
 
@@ -221,6 +274,8 @@ measure_service_observed_time() {
   local status="ok"
   local service_seconds="na"
   local timing_line timing_msg ts metric_line
+  local svc_values_file svc_stats p99_ms max_ms avg_ms sample_count
+  svc_values_file=$(mktemp)
 
   expected_services=$((replicas * services_per_instance * job_iters))
   if [[ -z "${creation_anchor_ts}" ]]; then
@@ -249,6 +304,32 @@ measure_service_observed_time() {
   timing_line="ServiceObservedSeconds run=${run_id} ${experiment_desc} serviceObserved=${service_seconds}s expectedServices=${expected_services} observedServices=${observed_services} status=${status}"
   echo "${timing_line}" | tee -a "${SUMMARY_FILE}"
 
+  while IFS='|' read -r svc_name create_ts; do
+    [[ -z "${svc_name}" || -z "${create_ts}" ]] && continue
+    create_epoch_ms=$(to_epoch_ms "${create_ts}")
+    [[ -z "${create_epoch_ms}" ]] && continue
+    delta_ms=$((create_epoch_ms - creation_anchor_ts * 1000))
+    if [[ "${delta_ms}" -ge 0 ]]; then
+      echo "${delta_ms}" >> "${svc_values_file}"
+    fi
+  done < <(kubectl get svc -n "${ns}" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null | awk -F'|' '$1 ~ /^svc-/' || true)
+
+  if [[ ! -s "${svc_values_file}" ]]; then
+    kubectl get svc -n "${ns}" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.creationTimestamp}{"\n"}{end}' 2>/dev/null | while IFS='|' read -r svc_name create_ts; do
+      [[ -z "${svc_name}" || -z "${create_ts}" ]] && continue
+      create_epoch_ms=$(to_epoch_ms "${create_ts}")
+      [[ -z "${create_epoch_ms}" ]] && continue
+      delta_ms=$((create_epoch_ms - creation_anchor_ts * 1000))
+      if [[ "${delta_ms}" -ge 0 ]]; then
+        echo "${delta_ms}" >> "${svc_values_file}"
+      fi
+    done
+  fi
+
+  svc_stats=$(calc_stats_from_file_ms "${svc_values_file}")
+  read -r p99_ms max_ms avg_ms sample_count <<< "${svc_stats}"
+  echo "ServiceLatency run=${run_id} ${experiment_desc} 99th=${p99_ms}ms max=${max_ms}ms avg=${avg_ms}ms samples=${sample_count}" | tee -a "${SUMMARY_FILE}"
+
   if [[ -n "${run_log_file}" && -f "${run_log_file}" ]]; then
     timing_msg="${BASE_NS}: ServiceObserved serviceReady: ${service_seconds}s expectedServices: ${expected_services} observedServices: ${observed_services} status: ${status}"
     ts=$(date +"%Y-%m-%d %H:%M:%S")
@@ -261,7 +342,18 @@ measure_service_observed_time() {
     else
       echo "${metric_line}" >> "${run_log_file}"
     fi
+
+    metric_line="time=\"${ts}\" level=info msg=\"${BASE_NS}: ServiceLatency 99th: ${p99_ms}ms max: ${max_ms}ms avg: ${avg_ms}ms samples: ${sample_count}\" file=\"run_new_perfapp_postgres_codecoapp_cam.sh:measure_service_observed_time\""
+    if grep -q 'Finished execution with UUID:' "${run_log_file}"; then
+      awk -v ins="${metric_line}" '
+        /Finished execution with UUID:/ && !done { print ins; done=1 }
+        { print }
+      ' "${run_log_file}" > "${run_log_file}.tmp" && mv "${run_log_file}.tmp" "${run_log_file}"
+    else
+      echo "${metric_line}" >> "${run_log_file}"
+    fi
   fi
+  rm -f "${svc_values_file}"
 }
 
 extract_podlatency_block() {
@@ -317,14 +409,33 @@ measure_delete_time() {
   local start_ts_ms end_ts_ms duration_ms sec ms_rem duration ts metric_line
   local delete_started_at now delete_elapsed
   local remaining_pods remaining_deploy remaining_codecoapp remaining_svc remaining
+  local pod_delete_values_file pod_delete_stats p99_ms max_ms avg_ms sample_count
+  local initial_pods current_pods now_ms pod_name
+  declare -A pending_pods=()
+  pod_delete_values_file=$(mktemp)
   start_ts_ms=$(date +%s%3N)
   delete_started_at=$(date +%s)
+
+  initial_pods=$(kubectl get pods -n "${ns}" --no-headers -o custom-columns=":metadata.name" 2>/dev/null || true)
+  while IFS= read -r pod_name; do
+    [[ -z "${pod_name}" ]] && continue
+    pending_pods["${pod_name}"]=1
+  done <<< "${initial_pods}"
 
   echo "delete-start namespace=${ns}"
   kubectl delete codecoapp -n "${ns}" --all --wait=false --ignore-not-found=true >/dev/null 2>&1 || true
   kubectl delete deploy,svc,pod -n "${ns}" --all --wait=false --ignore-not-found=true >/dev/null 2>&1 || true
 
   while true; do
+    current_pods=$(kubectl get pods -n "${ns}" --no-headers -o custom-columns=":metadata.name" 2>/dev/null || true)
+    now_ms=$(date +%s%3N)
+    for pod_name in "${!pending_pods[@]}"; do
+      if ! grep -qx "${pod_name}" <<< "${current_pods}"; then
+        echo "$((now_ms - start_ts_ms))" >> "${pod_delete_values_file}"
+        unset 'pending_pods[$pod_name]'
+      fi
+    done
+
     remaining_pods=$(kubectl get pods -n "${ns}" --no-headers 2>/dev/null | wc -l || echo 0)
     remaining_deploy=$(kubectl get deploy -n "${ns}" --no-headers 2>/dev/null | wc -l || echo 0)
     remaining_codecoapp=$(kubectl get codecoapp -n "${ns}" --no-headers 2>/dev/null | wc -l || echo 0)
@@ -364,6 +475,9 @@ measure_delete_time() {
   duration=$(printf "%d.%03d" "${sec}" "${ms_rem}")
 
   echo "DeleteDurationSeconds run=${run_id} ${experiment_desc} duration=${duration}s" | tee -a "${DELETE_LOG}"
+  pod_delete_stats=$(calc_stats_from_file_ms "${pod_delete_values_file}")
+  read -r p99_ms max_ms avg_ms sample_count <<< "${pod_delete_stats}"
+  echo "PodDeletionLatency run=${run_id} ${experiment_desc} 99th=${p99_ms}ms max=${max_ms}ms avg=${avg_ms}ms samples=${sample_count}" | tee -a "${SUMMARY_FILE}"
 
   if [[ -n "${run_log_file}" && -f "${run_log_file}" ]]; then
     ts=$(date +"%Y-%m-%d %H:%M:%S")
@@ -376,7 +490,18 @@ measure_delete_time() {
     else
       echo "${metric_line}" >> "${run_log_file}"
     fi
+
+    metric_line="time=\"${ts}\" level=info msg=\"${BASE_NS}: PodDeletionLatency 99th: ${p99_ms}ms max: ${max_ms}ms avg: ${avg_ms}ms samples: ${sample_count}\" file=\"run_new_perfapp_postgres_codecoapp_cam.sh:measure_delete_time\""
+    if grep -q 'Finished execution with UUID:' "${run_log_file}"; then
+      awk -v ins="${metric_line}" '
+        /Finished execution with UUID:/ && !done { print ins; done=1 }
+        { print }
+      ' "${run_log_file}" > "${run_log_file}.tmp" && mv "${run_log_file}.tmp" "${run_log_file}"
+    else
+      echo "${metric_line}" >> "${run_log_file}"
+    fi
   fi
+  rm -f "${pod_delete_values_file}"
 }
 
 if ls kubelet-density-heavy_perfapp-postgres_codecoapp-cam-only_*.log >/dev/null 2>&1; then
