@@ -158,18 +158,33 @@ extract_podlatency_block() {
     echo "------------------------------------------------------------"
 
     awk '
-      /Stopping measurement: (podLatency|serviceLatency)/ && !p {p=1}
-      p {print}
-      /👋 Exiting kube-burner/ {p=0; exit}
+      {
+        line=$0
+        low=tolower(line)
+
+        if (line ~ /Stopping measurement: (podLatency|serviceLatency)/) { print; next }
+        if (line ~ /Deleting [0-9]+ namespaces with label: kubernetes.io\/metadata.name=kube-burner-service-latency/) { print; next }
+        if (line ~ /Finished execution with UUID:/) { print; next }
+        if (line ~ /👋 Exiting kube-burner/) { print; next }
+        if (line ~ /file="run_new_perfapp_postgres_codecoapp_cam.sh:(capture_creation_status|measure_delete_time)"/) { print; next }
+
+        # Keep latency quantiles from the full log; these can appear before "Stopping measurement"
+        if (line ~ /level=info/ && (line ~ /(50th:|99th:|max:|avg:)/ || low ~ /containerready/)) { print; next }
+      }
     ' "${src_log}" | sed -E '
-      /file="service_latency.go:[0-9]+"/ s/: Ready 99th:/: ServiceLatency 99th:/
+      /file="service_latency.go:[0-9]+"/{
+      s/: Ready 50th:/: ServiceLatency 50th:/g
+      s/: Ready 99th:/: ServiceLatency 99th:/g
+      s/: Ready max:/: ServiceLatency max:/g
+      s/: Ready avg:/: ServiceLatency avg:/g
+      }
       /file="base_measurement.go:[0-9]+"/{
       s/50th: ([0-9]+)/50th: \1ms/g
       s/99th: ([0-9]+)/99th: \1ms/g
       s/max: ([0-9]+)/max: \1ms/g
       s/avg: ([0-9]+)/avg: \1ms/g
       }
-    '
+    ' | awk '!seen[$0]++'
 
     echo
   } >> "${SUMMARY_FILE}"
