@@ -260,11 +260,8 @@ wait_for_creation_readiness() {
     fi
 
     wait_signature="${criterion}|${current_count}|${ready_pods}|${observed_pods}|${codecoapps}|${plans}"
-    if [[ "${wait_signature}" != "${last_wait_signature}" || $((elapsed - last_wait_log_at)) -ge "${WAIT_LOG_INTERVAL_SECONDS}" ]]; then
-      echo "create-wait criterion=${criterion} value=${current_count}/${expected_pods} readyPods=${ready_pods}/${expected_pods} observedPods=${observed_pods}/${expected_pods} codecoapps=${codecoapps} assignmentplan='${plans}' elapsed=${elapsed}s"
-      last_wait_signature="${wait_signature}"
-      last_wait_log_at="${elapsed}"
-    fi
+    last_wait_signature="${wait_signature}"
+    last_wait_log_at="${elapsed}"
     sleep "${WAIT_POLL_SECONDS}"
   done
 }
