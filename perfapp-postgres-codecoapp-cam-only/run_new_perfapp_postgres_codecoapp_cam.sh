@@ -9,17 +9,19 @@ cd "${SCRIPT_DIR}"
 BASE_NS="${BASE_NS:-kubelet-density-heavy}"
 TEMPLATE_FILE="kubelet-density-heavy.template-codecoapp-only.yml"
 MAX_WAIT_TIMEOUT="${MAX_WAIT_TIMEOUT:-5m}"
-KUBEBURNER_TIMEOUT="${KUBEBURNER_TIMEOUT:-6m}"
-INTER_EXPERIMENT_SLEEP="${INTER_EXPERIMENT_SLEEP:-10}"
-WAIT_CREATE_TIMEOUT="${WAIT_CREATE_TIMEOUT:-300}"
+KUBEBURNER_TIMEOUT="${KUBEBURNER_TIMEOUT:-4m}"
+INTER_EXPERIMENT_SLEEP="${INTER_EXPERIMENT_SLEEP:-3}"
+WAIT_CREATE_TIMEOUT="${WAIT_CREATE_TIMEOUT:-180}"
 WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-2}"
 WAIT_COUNTER_MODE="${WAIT_COUNTER_MODE:-ready}" # observed | ready
-POST_CREATION_DELAY_SECONDS="${POST_CREATION_DELAY_SECONDS:-90}"
-DELETE_WAIT_TIMEOUT="${DELETE_WAIT_TIMEOUT:-180}"
+POST_CREATION_DELAY_SECONDS="${POST_CREATION_DELAY_SECONDS:-10}"
+DELETE_WAIT_TIMEOUT="${DELETE_WAIT_TIMEOUT:-120}"
 DELETE_POLL_SECONDS="${DELETE_POLL_SECONDS:-1}"
 DELETE_WAIT_INCLUDE_SERVICES="${DELETE_WAIT_INCLUDE_SERVICES:-true}" # true | false
-WAIT_SERVICE_TIMEOUT="${WAIT_SERVICE_TIMEOUT:-300}"
+WAIT_SERVICE_TIMEOUT="${WAIT_SERVICE_TIMEOUT:-180}"
 SERVICE_POLL_SECONDS="${SERVICE_POLL_SECONDS:-1}"
+WAIT_LOG_INTERVAL_SECONDS="${WAIT_LOG_INTERVAL_SECONDS:-15}"
+VERBOSE_KUBEBURNER_OUTPUT="${VERBOSE_KUBEBURNER_OUTPUT:-false}" # true | false
 iterations="${iterations:-1}"
 SCHEDULER_MODE="${1:-qos}" # qos | def
 
@@ -132,6 +134,7 @@ wait_for_creation_readiness() {
   local observed_ready_seconds="" pod_ready_seconds="" container_ready_seconds=""
   local timing_line timing_msg ts metric_line
   local pod_ready_values_file pod_ready_stats p99_ms max_ms avg_ms sample_count
+  local last_wait_signature="" last_wait_log_at=0
   pod_ready_values_file=$(mktemp)
 
   expected_pods=$((replicas * components_per_instance * job_iters))
@@ -256,7 +259,12 @@ wait_for_creation_readiness() {
       return 1
     fi
 
-    echo "create-wait criterion=${criterion} value=${current_count}/${expected_pods} readyPods=${ready_pods}/${expected_pods} observedPods=${observed_pods}/${expected_pods} codecoapps=${codecoapps} assignmentplan='${plans}' elapsed=${elapsed}s"
+    wait_signature="${criterion}|${current_count}|${ready_pods}|${observed_pods}|${codecoapps}|${plans}"
+    if [[ "${wait_signature}" != "${last_wait_signature}" || $((elapsed - last_wait_log_at)) -ge "${WAIT_LOG_INTERVAL_SECONDS}" ]]; then
+      echo "create-wait criterion=${criterion} value=${current_count}/${expected_pods} readyPods=${ready_pods}/${expected_pods} observedPods=${observed_pods}/${expected_pods} codecoapps=${codecoapps} assignmentplan='${plans}' elapsed=${elapsed}s"
+      last_wait_signature="${wait_signature}"
+      last_wait_log_at="${elapsed}"
+    fi
     sleep "${WAIT_POLL_SECONDS}"
   done
 }
@@ -411,6 +419,7 @@ measure_delete_time() {
   local remaining_pods remaining_deploy remaining_codecoapp remaining_svc remaining
   local pod_delete_values_file pod_delete_stats p99_ms max_ms avg_ms sample_count
   local initial_pods current_pods now_ms pod_name
+  local last_delete_signature="" last_delete_log_at=0
   declare -A pending_pods=()
   pod_delete_values_file=$(mktemp)
   start_ts_ms=$(date +%s%3N)
@@ -464,7 +473,12 @@ measure_delete_time() {
       break
     fi
 
-    echo "delete-wait remaining=${remaining} pods=${remaining_pods} deploy=${remaining_deploy} codecoapp=${remaining_codecoapp} svc=${remaining_svc} includeServices=${DELETE_WAIT_INCLUDE_SERVICES} elapsed=${delete_elapsed}s"
+    delete_signature="${remaining}|${remaining_pods}|${remaining_deploy}|${remaining_codecoapp}|${remaining_svc}"
+    if [[ "${delete_signature}" != "${last_delete_signature}" || $((delete_elapsed - last_delete_log_at)) -ge "${WAIT_LOG_INTERVAL_SECONDS}" ]]; then
+      echo "delete-wait remaining=${remaining} pods=${remaining_pods} deploy=${remaining_deploy} codecoapp=${remaining_codecoapp} svc=${remaining_svc} includeServices=${DELETE_WAIT_INCLUDE_SERVICES} elapsed=${delete_elapsed}s"
+      last_delete_signature="${delete_signature}"
+      last_delete_log_at="${delete_elapsed}"
+    fi
     sleep "${DELETE_POLL_SECONDS}"
   done
 
@@ -520,6 +534,7 @@ for (( run=1; run<=iterations; run++ )); do
   echo "Scheduler name: ${SCHEDULER_NAME}"
   echo "Create wait criterion: ${WAIT_COUNTER_MODE}"
   echo "Service wait timeout: ${WAIT_SERVICE_TIMEOUT}s"
+  echo "Wait log interval: ${WAIT_LOG_INTERVAL_SECONDS}s"
   echo "Delete waits services: ${DELETE_WAIT_INCLUDE_SERVICES}"
   echo "Summary log: ${SUMMARY_FILE}"
   echo "Delete log: ${DELETE_LOG}"
@@ -551,9 +566,19 @@ for (( run=1; run<=iterations; run++ )); do
 
     creation_started_at=$(date +%s)
     if command -v timeout >/dev/null 2>&1; then
-      timeout "${KUBEBURNER_TIMEOUT}" kube-burner init -c kubelet-density-heavy.codecoapp-only.yml || true
+      if [[ "${VERBOSE_KUBEBURNER_OUTPUT}" == "true" ]]; then
+        timeout "${KUBEBURNER_TIMEOUT}" kube-burner init -c kubelet-density-heavy.codecoapp-only.yml || true
+      else
+        timeout "${KUBEBURNER_TIMEOUT}" kube-burner init -c kubelet-density-heavy.codecoapp-only.yml 2>&1 \
+          | grep -E 'Starting kube-burner|Registered measurement|Stopping measurement|Finished execution with UUID|Exiting kube-burner|ERROR|Error|panic' || true
+      fi
     else
-      kube-burner init -c kubelet-density-heavy.codecoapp-only.yml || true
+      if [[ "${VERBOSE_KUBEBURNER_OUTPUT}" == "true" ]]; then
+        kube-burner init -c kubelet-density-heavy.codecoapp-only.yml || true
+      else
+        kube-burner init -c kubelet-density-heavy.codecoapp-only.yml 2>&1 \
+          | grep -E 'Starting kube-burner|Registered measurement|Stopping measurement|Finished execution with UUID|Exiting kube-burner|ERROR|Error|panic' || true
+      fi
     fi
 
     if ls kube-burner-*.log >/dev/null 2>&1; then
