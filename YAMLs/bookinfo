@@ -1,0 +1,78 @@
+apiVersion: codeco.he-codeco.eu/v1alpha1
+kind: CodecoApp
+metadata:
+  name: bookinfo
+  namespace:  {{ .namespace }}
+spec:
+  appEnergyLimit: "50"
+  appFailureTolerance: ""
+  performanceProfile: Greenness
+  appName: bookinfo-swmapp
+  codecoapp-msspec:
+  - podspec:
+      schedulerName:  {{ .schedulerName }}
+      containers:
+      - name: productpage
+        image: docker.io/istio/examples-bookinfo-productpage-v1:1.20.3
+        ports:
+        - containerPort: 9080
+          protocol: TCP
+    serviceName: productpage
+    serviceChannels:
+    - advancedChannelSettings:
+        maxDelay: "10s"
+      channelName: reviews
+      otherService:
+        appName: bookinfo-swmapp
+        serviceName: reviews-v1
+        port: 9080
+    - advancedChannelSettings:
+        maxDelay: "10s"
+      channelName: details
+      otherService:
+        appName: bookinfo-swmapp
+        serviceName: details
+        port: 9080
+   - podspec:
+      schedulerName:  {{ .schedulerName }}
+      containers:
+      - name: details
+        image: docker.io/istio/examples-bookinfo-details-v1:1.20.3
+        ports:
+        - containerPort: 9080
+    serviceName: details
+  - podspec:
+      schedulerName:  {{ .schedulerName }}
+      containers:
+      - name: ratings
+        image: docker.io/istio/examples-bookinfo-ratings-v1:1.20.3
+        ports:
+        - containerPort: 9080
+          protocol: TCP
+    serviceName: ratings
+# ----pod4 reviews-v1 ----
+  - podspec:
+      schedulerName:  {{ .schedulerName }}
+      containers:
+      - name: reviews-1
+        image: docker.io/istio/examples-bookinfo-reviews-v1:1.20.3
+        ports:
+        - containerPort: 9080
+          protocol: TCP
+    serviceName: reviews-v1
+    serviceChannels:
+    - advancedChannelSettings:
+        maxDelay: "10s"
+      channelName: reviewstorate
+      serviceClass: BESTEFFORT
+      otherService:
+        appName: bookinfo-swmapp
+        serviceName: ratings
+        port: 9080
+
+
+
+  complianceClass: High
+  qosClass: BestEffort
+  securityClass: Good
+  
